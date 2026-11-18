@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.metric_catalog import metric_by_key, normalize_precision
 from app.store import store
 
 MODULE = "metric_def"
@@ -63,3 +64,57 @@ class MetricDefService:
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"指标定义已{action}"
+
+    def check_export_calibers(self, fields: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """V012 跨模块核对：用清单里的指标键和精度位数反查字段标签。
+
+        ``fields`` 为导出文件清单中的字段条目（含字段名/字段标签/指标键/精度位数）；
+        未提供时退化为核对全部指标定义自己的口径完整性。
+        """
+        issues: list[dict[str, Any]] = []
+        checked = 0
+        for field in fields or []:
+            metric_key = str(field.get("指标键") or "").strip()
+            if not metric_key:
+                continue
+            checked += 1
+            metric = metric_by_key(metric_key)
+            if metric is None:
+                issues.append({
+                    "指标键": metric_key,
+                    "字段名": field.get("字段名"),
+                    "问题": "指标定义中不存在该指标键",
+                })
+                continue
+            if str(field.get("精度位数")) != str(normalize_precision(metric.get("精度位数"))):
+                issues.append({
+                    "指标键": metric_key,
+                    "字段名": field.get("字段名"),
+                    "问题": "精度位数与指标定义不一致",
+                    "清单值": field.get("精度位数"),
+                    "指标定义值": normalize_precision(metric.get("精度位数")),
+                })
+            if field.get("字段标签") and str(field.get("字段标签")) != str(metric.get("字段标签")):
+                issues.append({
+                    "指标键": metric_key,
+                    "字段名": field.get("字段名"),
+                    "问题": "字段标签与指标定义不一致",
+                    "清单值": field.get("字段标签"),
+                    "指标定义值": metric.get("字段标签"),
+                })
+        if fields is None:
+            for row in store.rows(MODULE):
+                checked += 1
+                precision = normalize_precision(row.get("精度位数"), default=-1)
+                if not isinstance(precision, int) or precision < 0:
+                    issues.append({
+                        "指标键": row.get("指标编号"),
+                        "问题": "精度位数不是有效的非负整数",
+                        "指标定义值": row.get("精度位数"),
+                    })
+        return {
+            "ok": not issues,
+            "核对版本": "V012",
+            "核对字段数": checked,
+            "问题": issues,
+        }

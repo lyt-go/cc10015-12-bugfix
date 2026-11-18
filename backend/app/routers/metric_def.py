@@ -8,11 +8,13 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
+from app.services.data_export import DataExportService
 from app.services.metric_def import MetricDefService
 
 router = APIRouter(prefix="/api/metric_def", tags=["指标定义"])
 
 service = MetricDefService()
+export_service = DataExportService()
 
 LIST_FIELDS = ["指标编号", "指标名称", "计算公式", "统计粒度", "时间窗口", "基准取值", "精度位数", "口径版本"]
 STATUSES = ["草稿", "待校验", "已生效", "已废弃"]
@@ -63,6 +65,23 @@ def export_entries(
     return StreamingResponse(
         iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="metric_def.csv"'})
+
+
+@router.get("/export-caliber-check")
+def export_caliber_check(batch: str | None = Query(default=None)) -> dict:
+    """V012 跨模块核对：读取导出文件清单的指标键与精度位数，核对字段标签。"""
+    fields = None
+    manifest = None
+    if batch:
+        manifest = export_service.get_manifest(batch)
+        if manifest is None:
+            raise HTTPException(status_code=404, detail=f"导出批次 {batch} 没有清单")
+        fields = manifest.get("字段清单", [])
+    result = service.check_export_calibers(fields)
+    result["导出批次"] = batch
+    if manifest is not None:
+        result["清单编号"] = manifest.get("清单编号")
+    return result
 
 
 @router.get("/{entry_id}", response_model=dict)
